@@ -9,6 +9,7 @@ find_package(CUDAToolkit REQUIRED)
 #set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CUDA_RUNTIME_LIBRARY Static)
 
 # set(CMAKE_CUDA_ARCHITECTURES 50 52 60 61 70 72 75 80 86 87 89 90 100 101 120)
 set(CMAKE_CUDA_ARCHITECTURES 89 90 100 101 120)
@@ -23,7 +24,6 @@ add_library(gaussian_lib STATIC gaussian.h gaussian_cpu.cpp gaussian_gpu.cu comm
 
 
 target_compile_options(gaussian_lib PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -forward-slash-prefix-opts -forward-unknown-opts>)
-
 target_compile_features(gaussian_lib PRIVATE cxx_std_17 cuda_std_17)
 
 # 编译静态库需要打开这两个选项
@@ -31,9 +31,13 @@ target_compile_features(gaussian_lib PRIVATE cxx_std_17 cuda_std_17)
 set_target_properties(gaussian_lib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(gaussian_lib PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
+
+
 target_include_directories(gaussian_lib PUBLIC
     ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
 )
+
+
 message(STATUS "CUDA HDR: ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
 
 add_executable(gaussian main.cpp gaussian.h)

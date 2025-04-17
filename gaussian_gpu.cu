@@ -25,7 +25,9 @@ bool check_err() {
   return true;
 }
 
-void set_kernel(const float *k) { cudaMemcpyToSymbol(kernel, k, KERNEL_SIZE); }
+void set_kernel(const float *k) {
+  cudaMemcpyToSymbol(kernel, k, KERNEL_SIZE * sizeof(float));
+}
 /// @brief 行方向线程块大小x
 constexpr int ROW_BLOCK_DIM_X = 16;
 /// @brief 行方向线程块大小y
@@ -58,24 +60,19 @@ __global__ void convolution_row_kernel(float *dest, float *src, int image_h,
   dest += base_y * image_w + base_x;
   src += base_y * image_w + base_x;
 
-// 加载中间数据
+// 加载数据
 // 编译指令：循环展开
 #pragma unroll
-  for (int i = ROW_HALO_STEP; i < ROW_HALO_STEP + ROW_RESULT_STEP; i++) {
-    // 如果不假定图片长宽被TILE整除，则中间也需要判断幽灵元素
+  for (int i = 0; i <= ROW_HALO_STEP + ROW_RESULT_STEP; i++) {
+    // 如果不假定图片长宽被TILE整除，则中间也需要判断幽灵元素，base_y一定大于等于0
     if (base_x + i * ROW_BLOCK_DIM_X >= 0 &&
-        base_x + i * ROW_BLOCK_DIM_X < image_w) {
+        base_x + i * ROW_BLOCK_DIM_X < image_w && base_y < image_h) {
       shared_data[threadIdx.y][threadIdx.x + i * ROW_BLOCK_DIM_X] =
           src[i * ROW_BLOCK_DIM_X];
+    } else {
+      shared_data[threadIdx.y][threadIdx.x + i * ROW_BLOCK_DIM_X] = 0;
     }
   }
-  // 加载光环元素
-  shared_data[threadIdx.y][threadIdx.x] = (base_x >= 0) ? src[0] : 0;
-  constexpr int RIGHT_HALO_OFFSET =
-      (ROW_HALO_STEP + ROW_RESULT_STEP) * ROW_BLOCK_DIM_X;
-  shared_data[threadIdx.y][threadIdx.x + RIGHT_HALO_OFFSET] =
-      (base_x + RIGHT_HALO_OFFSET < image_w) ? src[RIGHT_HALO_OFFSET] : 0;
-
   // 同步，相当于__syncthreads
   cg::sync(cta);
 #pragma unroll
@@ -89,7 +86,7 @@ __global__ void convolution_row_kernel(float *dest, float *src, int image_h,
     }
     // 在范围内则写入
     if (base_x + i * ROW_BLOCK_DIM_X >= 0 &&
-        base_x + i * ROW_BLOCK_DIM_X < image_w) {
+        base_x + i * ROW_BLOCK_DIM_X < image_w && base_y < image_h) {
       dest[i * ROW_BLOCK_DIM_X] = sum;
     }
   }
@@ -116,20 +113,17 @@ __global__ void convolution_column_kernel(float *dest, float *src, int image_h,
   dest += base_y * image_w + base_x;
   src += base_y * image_w + base_x;
 
-// 加载中间元素
+// 加载元素，依次上方光环，主要，下方光环
 #pragma unroll
-  for (int i = COLUMN_HALO_STEP; i < COLUMN_HALO_STEP + COLUMN_RESULT_STEP;
-       i++) {
-    shared_data[threadIdx.x][threadIdx.y + i * COLUMN_BLOCK_DIM_Y] =
-        src[i * COLUMN_BLOCK_DIM_Y * image_w];
+  for (int i = 0; i <= COLUMN_HALO_STEP + COLUMN_RESULT_STEP; i++) {
+    if (base_y + i * COLUMN_BLOCK_DIM_Y >= 0 &&
+        base_y + i * COLUMN_BLOCK_DIM_Y < image_h && base_x < image_w) {
+      shared_data[threadIdx.x][threadIdx.y + i * COLUMN_BLOCK_DIM_Y] =
+          src[i * COLUMN_BLOCK_DIM_Y * image_w];
+    } else {
+      shared_data[threadIdx.x][threadIdx.y + i * COLUMN_BLOCK_DIM_Y] = 0;
+    }
   }
-  // 加载光环元素,上面和下面
-  shared_data[threadIdx.x][threadIdx.y] = (base_y > 0) ? src[0] : 0;
-  constexpr int LOWER_HALO_OFFSET =
-      (COLUMN_HALO_STEP + COLUMN_RESULT_STEP) * COLUMN_BLOCK_DIM_Y;
-  shared_data[threadIdx.x][threadIdx.y + LOWER_HALO_OFFSET] =
-      (base_y + LOWER_HALO_OFFSET < image_h) ? src[LOWER_HALO_OFFSET * image_w]
-                                             : 0;
   cg::sync(cta);
 // 在列上执行卷积
 #pragma unroll
@@ -141,33 +135,53 @@ __global__ void convolution_column_kernel(float *dest, float *src, int image_h,
       sum += kernel[j + RADIUS] *
              shared_data[threadIdx.x][threadIdx.y + i * COLUMN_BLOCK_DIM_Y + j];
     }
-    dest[i * COLUMN_BLOCK_DIM_Y * image_w] = sum;
+    // 在范围内则写回
+    if (base_y + i * COLUMN_BLOCK_DIM_Y >= 0 &&
+        base_y + i * COLUMN_BLOCK_DIM_Y < image_h && base_x < image_w) {
+      dest[i * COLUMN_BLOCK_DIM_Y * image_w] = sum;
+    }
   }
 }
 
-extern "C" void convolution_row_gpu(float *dest, float *src, int image_h,
-                                    int image_w) {
-  dim3 blocks_row(image_w / ROW_TILE_DIM_X, image_h / ROW_TILE_DIM_Y);
+void convolution_row_gpu(float *dest, float *src, int image_h, int image_w) {
+  // tile必须覆盖整个区域，不整除则加1
+  int bx = image_w / ROW_TILE_DIM_X;
+  if (image_w % ROW_TILE_DIM_X) {
+    bx += 1;
+  }
+  int by = image_h / ROW_TILE_DIM_Y;
+  if (image_h % ROW_TILE_DIM_Y) {
+    by += 1;
+  }
+  dim3 blocks_row(bx, by);
   dim3 threads_row(ROW_BLOCK_DIM_X, ROW_BLOCK_DIM_Y);
   convolution_row_kernel<<<blocks_row, threads_row>>>(dest, src, image_h,
                                                       image_w);
 }
-extern "C" void convolution_column_gpu(float *dest, float *src, int image_h,
-                                       int image_w) {
-  dim3 blocks_column(image_w / COLUMN_TILE_DIM_X, image_h / COLUMN_TILE_DIM_Y);
+void convolution_column_gpu(float *dest, float *src, int image_h, int image_w) {
+  // tile必须覆盖整个区域，不整除则加1
+  int bx = image_w / COLUMN_TILE_DIM_X;
+  if (image_w % COLUMN_TILE_DIM_X) {
+    bx += 1;
+  }
+  int by = image_h / COLUMN_TILE_DIM_Y;
+  if (image_h % COLUMN_TILE_DIM_Y) {
+    by += 1;
+  }
+  dim3 blocks_column(bx, by);
   dim3 threads_column(COLUMN_BLOCK_DIM_X, COLUMN_BLOCK_DIM_Y);
   convolution_column_kernel<<<blocks_column, threads_column>>>(
       dest, src, image_h, image_w);
 }
-extern "C" void gaussian_gpu(float *dest, float *src, int image_h, int image_w,
-                             float sigma) {
+void gaussian_gpu(float *dest, float *src, int image_h, int image_w,
+                  float sigma) {
   // 至少1个tile大
   assert(image_h > COLUMN_TILE_DIM_Y);
   assert(image_w > ROW_TILE_DIM_X);
   // 且必须是TILE的整数倍
-  // 对于照片这通常是满足的如3072*4096，也可以填充0
-  assert(image_h % COLUMN_TILE_DIM_Y == 0);
-  assert(image_w % ROW_TILE_DIM_Y == 0);
+  // 对于照片这通常是满足的如3072*4096
+  // assert(image_h % COLUMN_TILE_DIM_Y == 0);
+  // assert(image_w % ROW_TILE_DIM_Y == 0);
 
   const int buffer_size = image_h * image_w * sizeof(float);
 
