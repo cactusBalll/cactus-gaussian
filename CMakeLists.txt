@@ -22,7 +22,7 @@ add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/source-charset:utf-8>")
 
 add_library(gaussian_lib STATIC gaussian.h gaussian_cpu.cpp gaussian_gpu.cu common.h)
 
-
+# -forward-slash-prefix-opts -forward-unknown-opts让nvcc把MSVC风格编译选项传递给MSVC
 target_compile_options(gaussian_lib PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -forward-slash-prefix-opts -forward-unknown-opts>)
 target_compile_features(gaussian_lib PRIVATE cxx_std_17 cuda_std_17)
 
