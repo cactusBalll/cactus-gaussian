@@ -1,6 +1,6 @@
 #pragma once
 
-// comments encoding: GB2312
+// comments encoding: UTF-8
 extern "C" {
 	/// @brief 行上一维高斯卷积
 	/// @param dest 输出f32灰度图片
