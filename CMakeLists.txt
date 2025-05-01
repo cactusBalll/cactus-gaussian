@@ -40,9 +40,30 @@ target_include_directories(gaussian_lib PUBLIC
 
 message(STATUS "CUDA HDR: ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
 
-add_executable(gaussian main.cpp gaussian.h)
+# 配置OpenCV作为测试基准
+# DLL也需要添加到环境变量
+# windows下的预编译包不包含CUDA支持，需要重新编译
+set(OpenCV_DIR "D:/college2025spr/GPGPU/opencv-custom-build/install")
+find_package(OpenCV REQUIRED)
+message(STATUS "OpenCV HDR: ${OpenCV_INCLUDE_DIRS}")
+message(STATUS "OpenCV LIB: ${OpenCV_LIBRARIES}")
+
+
+
+# 用于性能测试的使用opencv实现的相同功能的库
+add_library(gaussian_cv2 STATIC gaussian_opencv.cpp common.h gaussian_opencv.h)
+target_include_directories(gaussian_cv2 PUBLIC ${OpenCV_INCLUDE_DIRS} ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+target_link_libraries(gaussian_cv2 PUBLIC ${OpenCV_LIBRARIES})
+target_compile_features(gaussian_cv2 PRIVATE cxx_std_17 cuda_std_17)
+
+
+
+
+
+add_executable(gaussian main.cpp gaussian.h gaussian_opencv.h)
 target_compile_features(gaussian PRIVATE cxx_std_17)
-target_link_libraries(gaussian gaussian_lib)
+target_link_libraries(gaussian gaussian_lib gaussian_cv2)
 
 
-
+add_executable(gaussian_opencv_test gaussian_opencv_test.cpp)
+target_link_libraries(gaussian_opencv_test gaussian_cv2)
